@@ -26,33 +26,51 @@ services:
       retries: 3
       start_period: 10s
 
-  # Initialization job to reload Caddyfile once on 'docker compose up'
-  caddy-init-reload:
+  # Initialization job to RELOAD Caddyfile on every 'docker compose up'
+  caddy-reloader-on-up:
     image: docker:cli
-    # Use 'none' or another network mode if 'host' isn't strictly necessary for the client,
-    # but 'host' ensures it can talk to Caddy's admin API on localhost:2019 if you use that.
+    # IMPORTANT: Use 'no' so it runs on every 'up' and immediately exits,
+    # but doesn't try to restart if it fails.
+    restart: "no"
+    # Use 'host' network to ensure access to Caddy's admin API on localhost:2019
     network_mode: host
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-    # This service will run its command and then exit (it won't 'restart').
     entrypoint: /bin/sh
     command:
       - -c
       - |
-        echo "Waiting for Caddy service to be healthy..."
-        # Wait up to 60 seconds for the 'caddy' service to report 'healthy'
-        docker compose wait caddy --timeout 60 --interval 2s --state healthy
+        echo "Waiting for Caddy service to be healthy before attempting reload..."
 
-        # Once healthy, execute the reload command
-        if [ $? -eq 0 ]; then
-          echo 'Caddy service is healthy. Reloading Caddyfile...'
+        # This part ensures that if you run 'up' and Caddy is already healthy, 
+        # it doesn't wait the full timeout. If Caddy is being rebuilt/restarted, 
+        # it waits for the new instance to be healthy.
+        for i in $(seq 1 10); do
+          if docker compose inspect caddy --format '{{.State.Health.Status}}' | grep -q 'healthy'; then
+            echo "Caddy service is healthy. Proceeding to reload."
+            break
+          fi
+          echo "Waiting for Caddy to become healthy (Attempt $i of 10)..."
+          sleep 3
+        done
+
+        # Check health again and only reload if healthy
+        if docker compose inspect caddy --format '{{.State.Health.Status}}' | grep -q 'healthy'; then
+          echo 'Executing Caddy config reload...'
+          # The -f flag forces the configuration to be applied even if it appears unchanged
           docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --force 2>&1
-          echo 'Reload complete.'
+          if [ $? -eq 0 ]; then
+            echo 'Reload complete and successful.'
+            exit 0 # Success
+          else
+            echo 'Reload failed!'
+            exit 1 # Failure
+          fi
         else
-          echo 'Caddy service failed to become healthy. Skipping reload.'
-          exit 1
+          echo 'Caddy service failed to become healthy within the wait period. Skipping reload.'
+          exit 1 # Failure
         fi
-    # Depends on caddy to ensure it tries to run *after* caddy starts
+    # Use 'service_started' to ensure Caddy's process is running before the reloader attempts to connect.
     depends_on:
       caddy:
         condition: service_started

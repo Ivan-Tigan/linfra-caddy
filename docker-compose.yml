@@ -20,21 +20,26 @@ services:
 
   # Watcher to reload Caddy when Caddyfile changes
   caddy-reloader:
-    image: alpine:latest
+    image: docker:cli
     restart: unless-stopped
+    working_dir: /workdir
     volumes:
       - ./Caddyfile:/watch/Caddyfile:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
-    command: sh -c "
-      apk add --no-cache inotify-tools curl docker-cli &&
-      echo 'Watching for Caddyfile changes...' &&
-      while true; do
-        inotifywait -e modify,create,delete /watch/Caddyfile &&
-        echo 'Caddyfile changed, reloading Caddy...' &&
-        docker exec caddy-caddy-1 caddy reload --config /etc/caddy/Caddyfile --force &&
-        echo 'Caddy reloaded successfully'
-      done
-      "
+      - .:/workdir:ro
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        apk add --no-cache inotify-tools
+        echo 'Caddy reloader started, watching for changes...'
+        while true; do
+          inotifywait -e modify,create,close_write,moved_to /watch/Caddyfile 2>/dev/null
+          sleep 1
+          echo 'Caddyfile changed, reloading...'
+          docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --force 2>&1
+          echo 'Reload complete'
+        done
     network_mode: host
     depends_on:
       - caddy

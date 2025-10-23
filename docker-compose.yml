@@ -7,11 +7,13 @@ services:
       - "443:443"
       - "443:443/udp" # HTTP/3
     volumes:
+      # Caddy needs access to the Caddyfile to load it from disk
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     network_mode: host
     healthcheck:
+      # Caddy Admin API is accessible on localhost:2019
       test:
         [
           "CMD",
@@ -26,51 +28,58 @@ services:
       retries: 3
       start_period: 10s
 
-  # Initialization job to RELOAD Caddyfile on every 'docker compose up'
-  caddy-reloader-on-up:
-    image: docker:cli
-    # IMPORTANT: Use 'no' so it runs on every 'up' and immediately exits,
-    # but doesn't try to restart if it fails.
-    restart: "no"
-    # Use 'host' network to ensure access to Caddy's admin API on localhost:2019
+  # Reload job using Caddy's Admin API
+  caddy-api-reload:
+    # Use a minimal image with curl for the API call
+    image: curlimages/curl:latest
+    restart: "no" # Ensures it runs on every 'up' and immediately exits
+    # Must use 'host' to access Caddy's Admin API on localhost:2019
     network_mode: host
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Only need to mount the Caddyfile that will be posted
+      - ./Caddyfile:/tmp/Caddyfile:ro
     entrypoint: /bin/sh
     command:
       - -c
       - |
-        echo "Waiting for Caddy service to be healthy before attempting reload..."
+        API_ENDPOINT="http://localhost:2019/load"
+        CADDYFILE_PATH="/tmp/Caddyfile"
 
-        # This part ensures that if you run 'up' and Caddy is already healthy, 
-        # it doesn't wait the full timeout. If Caddy is being rebuilt/restarted, 
-        # it waits for the new instance to be healthy.
-        for i in $(seq 1 10); do
-          if docker compose inspect caddy --format '{{.State.Health.Status}}' | grep -q 'healthy'; then
-            echo "Caddy service is healthy. Proceeding to reload."
+        echo "Waiting for Caddy Admin API to be available..."
+
+        # Wait for the Caddy API to respond on port 2019
+        for i in $(seq 1 15); do
+          if curl --fail -s -o /dev/null "$API_ENDPOINT"; then
+            echo "Caddy Admin API is ready. Proceeding with configuration load."
             break
           fi
-          echo "Waiting for Caddy to become healthy (Attempt $i of 10)..."
-          sleep 3
+          echo "Waiting for Caddy API (Attempt $i of 15)..."
+          sleep 2
         done
 
-        # Check health again and only reload if healthy
-        if docker compose inspect caddy --format '{{.State.Health.Status}}' | grep -q 'healthy'; then
-          echo 'Executing Caddy config reload...'
-          # The -f flag forces the configuration to be applied even if it appears unchanged
-          docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --force 2>&1
-          if [ $? -eq 0 ]; then
-            echo 'Reload complete and successful.'
+        if [ $i -lt 15 ]; then
+          echo "Sending new Caddyfile to $API_ENDPOINT..."
+          
+          # The API call: POST the Caddyfile content with the Caddyfile Content-Type
+          RESPONSE=$(curl -X POST \
+            -H "Content-Type: text/caddyfile" \
+            --data-binary "@$CADDYFILE_PATH" \
+            "$API_ENDPOINT")
+          
+          CURL_STATUS=$?
+          
+          if [ $CURL_STATUS -eq 0 ]; then
+            echo "API Reload successful."
             exit 0 # Success
           else
-            echo 'Reload failed!'
+            echo "API Reload failed! Curl exit status: $CURL_STATUS"
+            echo "Caddy API Response: $RESPONSE"
             exit 1 # Failure
           fi
         else
-          echo 'Caddy service failed to become healthy within the wait period. Skipping reload.'
+          echo "Caddy Admin API failed to become available. Skipping reload."
           exit 1 # Failure
         fi
-    # Use 'service_started' to ensure Caddy's process is running before the reloader attempts to connect.
     depends_on:
       caddy:
         condition: service_started

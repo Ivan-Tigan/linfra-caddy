@@ -7,13 +7,11 @@ services:
       - "443:443"
       - "443:443/udp" # HTTP/3
     volumes:
-      # Caddy needs access to the Caddyfile to load it from disk
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     network_mode: host
     healthcheck:
-      # Caddy Admin API is accessible on localhost:2019
       test:
         [
           "CMD",
@@ -30,18 +28,19 @@ services:
 
   # Reload job using Caddy's Admin API
   caddy-api-reload:
-    # Use a minimal image with curl for the API call
-    image: curlimages/curl:latest
-    restart: "no" # Ensures it runs on every 'up' and immediately exits
-    # Must use 'host' to access Caddy's Admin API on localhost:2019
+    # Use a minimal Alpine image and install curl
+    image: alpine:latest
+    restart: "no"
     network_mode: host
     volumes:
-      # Only need to mount the Caddyfile that will be posted
       - ./Caddyfile:/tmp/Caddyfile:ro
     entrypoint: /bin/sh
     command:
       - -c
       - |
+        # Install curl inside the container before running the script
+        apk add --no-cache curl
+
         API_ENDPOINT="http://localhost:2019/load"
         CADDYFILE_PATH="/tmp/Caddyfile"
 
@@ -60,7 +59,7 @@ services:
         if [ $i -lt 15 ]; then
           echo "Sending new Caddyfile to $API_ENDPOINT..."
           
-          # The API call: POST the Caddyfile content with the Caddyfile Content-Type
+          # Perform the API call
           RESPONSE=$(curl -X POST \
             -H "Content-Type: text/caddyfile" \
             --data-binary "@$CADDYFILE_PATH" \

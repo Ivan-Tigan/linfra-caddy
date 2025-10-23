@@ -5,44 +5,57 @@ services:
     ports:
       - "80:80"
       - "443:443"
-      - "443:443/udp"  # HTTP/3
+      - "443:443/udp" # HTTP/3
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     network_mode: host
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:2019/metrics"]
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost:2019/metrics",
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
 
-  # Watcher to reload Caddy when Caddyfile changes
-  caddy-reloader:
+  # Initialization job to reload Caddyfile once on 'docker compose up'
+  caddy-init-reload:
     image: docker:cli
-    restart: unless-stopped
-    working_dir: /workdir
+    # Use 'none' or another network mode if 'host' isn't strictly necessary for the client,
+    # but 'host' ensures it can talk to Caddy's admin API on localhost:2019 if you use that.
+    network_mode: host
     volumes:
-      - ./Caddyfile:/watch/Caddyfile:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - .:/workdir:ro
+    # This service will run its command and then exit (it won't 'restart').
     entrypoint: /bin/sh
     command:
       - -c
       - |
-        apk add --no-cache inotify-tools
-        echo 'Caddy reloader started, watching for changes...'
-        while true; do
-          inotifywait -e modify,create,close_write,moved_to /watch/Caddyfile 2>/dev/null
-          sleep 1
-          echo 'Caddyfile changed, reloading...'
+        echo "Waiting for Caddy service to be healthy..."
+        # Wait up to 60 seconds for the 'caddy' service to report 'healthy'
+        docker compose wait caddy --timeout 60 --interval 2s --state healthy
+
+        # Once healthy, execute the reload command
+        if [ $? -eq 0 ]; then
+          echo 'Caddy service is healthy. Reloading Caddyfile...'
           docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --force 2>&1
-          echo 'Reload complete'
-        done
-    network_mode: host
+          echo 'Reload complete.'
+        else
+          echo 'Caddy service failed to become healthy. Skipping reload.'
+          exit 1
+        fi
+    # Depends on caddy to ensure it tries to run *after* caddy starts
     depends_on:
-      - caddy
+      caddy:
+        condition: service_started
 
 volumes:
   caddy_data:

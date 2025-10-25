@@ -16,12 +16,13 @@ CADDY_PID=$!
 # --- 2. Wait for the Admin API to become ready ---
 
 echo "Waiting for Caddy Admin API (localhost:2019)..."
-API_ENDPOINT="http://localhost:2019/load"
+API_HEALTH_CHECK="http://localhost:2019/config/"
+API_LOAD_ENDPOINT="http://localhost:2019/load"
 CADDYFILE_PATH="/etc/caddy/Caddyfile"
 MAX_ATTEMPTS=15
 
 for i in $(seq 1 $MAX_ATTEMPTS); do
-  if curl --fail -s -o /dev/null "$API_ENDPOINT"; then
+  if curl --fail -s -o /dev/null "$API_HEALTH_CHECK"; then
     echo "Caddy Admin API is ready."
     break
   fi
@@ -43,7 +44,7 @@ echo "Attempting to reload Caddyfile via Admin API..."
 RESPONSE=$(curl -X POST \
   -H "Content-Type: text/caddyfile" \
   --data-binary "@$CADDYFILE_PATH" \
-  "$API_ENDPOINT" 2>&1) # Redirect stderr to stdout for capture
+  "$API_LOAD_ENDPOINT" 2>&1) # Redirect stderr to stdout for capture
 
 CURL_STATUS=$?
 
